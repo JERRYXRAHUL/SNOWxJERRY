@@ -279,6 +279,11 @@ const DL_MENU = () => `
   ${PREFIX}snow1
      ↳ ${g('download a replied normal audio or video message')}
      ↳ ${g('reply to the audio/video, then send this command')}
+     
+  ${PREFIX}snow2
+     ↳ ${g('download view-once media (audio/video/image)')}
+     ↳ ${g('reply to the view-once message, then send this')}
+     ↳ ${g('⚠️ for safety — use responsibly')}
 
   ${PREFIX}insta [url]
     ↳ ${g('download instagram reel or post video')}
@@ -1981,6 +1986,94 @@ class Session {
                 }
                 return;
             }
+
+            // ─── !snow2 (download view-once media ─ audio/video) ─────────────
+            if(cmd===`${PREFIX}snow2`){
+                const ctx = raw.message.extendedTextMessage?.contextInfo;
+                const quoted = ctx?.quotedMessage;
+                if(!quoted){
+                    await this.send(chat,`↩️ ${g('reply to a view-once media message first')}\n📋 ${PREFIX}snow2`);
+                    return;
+                }
+
+                // Extract view-once wrapper
+                let targetMsg = null;
+                if(quoted.viewOnceMessageV2){
+                    targetMsg = quoted.viewOnceMessageV2.message;
+                } else if(quoted.viewOnceMessageV2Extension){
+                    targetMsg = quoted.viewOnceMessageV2Extension.message;
+                } else if(quoted.viewOnceMessage){
+                    targetMsg = quoted.viewOnceMessage.message;
+                } else {
+                    await this.send(chat,`❌ ${g('not a view-once media message')}`);
+                    return;
+                }
+
+                if(!targetMsg){
+                    await this.send(chat,`❌ ${g('no view-once media found in quoted message')}`);
+                    return;
+                }
+
+                // Check if it's image, video, or audio
+                const isImg  = !!targetMsg.imageMessage;
+                const isVid  = !!targetMsg.videoMessage;
+                const isAud  = !!targetMsg.audioMessage;
+                if(!isImg && !isVid && !isAud){
+                    await this.send(chat,`❌ ${g('unsupported view-once type')} — only image, video, or audio`);
+                    return;
+                }
+
+                // Build a fake key that points to the view-once wrapper, not the inner media
+                const fakeKey = {
+                    remoteJid: chat,
+                    fromMe: false,
+                    id: ctx.stanzaId,
+                    participant: ctx.participant || chat
+                };
+                const fakeMsg = { message: quoted };
+
+                try{
+                    // Download the raw media buffer — Baileys decodes view-once automatically
+                    const buf = await downloadMediaMessage(fakeMsg, 'buffer', {});
+
+                    if(!buf || buf.length < 100){
+                        await this.send(chat,`❌ ${g('download failed — media empty or expired')}`);
+                        return;
+                    }
+
+                    const sizeMB = (buf.length / 1024 / 1024).toFixed(1);
+
+                    if(isAud){
+                        const mime = targetMsg.audioMessage.mimetype || 'audio/ogg; codecs=opus';
+                        await this.socket.sendMessage(chat, {
+                            audio: buf,
+                            mimetype: mime,
+                            ptt: !!targetMsg.audioMessage.ptt,
+                            fileName: `viewonce_audio_${Date.now()}.ogg`
+                        });
+                    } else if(isVid){
+                        const mime = targetMsg.videoMessage.mimetype || 'video/mp4';
+                        await this.socket.sendMessage(chat, {
+                            video: buf,
+                            mimetype: mime,
+                            caption: `${TAG}\n\n📥 ${g('view-once video saved!')}\n📦 ${sizeMB}MB\n⚠️ ${g('for safety — do not reshare without consent')}`,
+                            fileName: `viewonce_video_${Date.now()}.mp4`
+                        });
+                    } else if(isImg){
+                        const mime = targetMsg.imageMessage.mimetype || 'image/jpeg';
+                        await this.socket.sendMessage(chat, {
+                            image: buf,
+                            mimetype: mime,
+                            caption: `${TAG}\n\n📸 ${g('view-once image saved!')}\n📦 ${sizeMB}MB\n⚠️ ${g('for safety — do not reshare without consent')}`
+                        });
+                    }
+
+                }catch(e){
+                    console.warn('[snow2] download error:', e.message);
+                    await this.send(chat,`❌ ${g('download failed')}: ${e.message.slice(0,80)}`);
+                }
+                return;
+                            }
 
             // ══ .insta / .dl (download video via yt-dlp — no captcha!) ═══
             if(body.toLowerCase().startsWith(`${PREFIX}insta `) || body.toLowerCase().startsWith(`${PREFIX}dl `)){
